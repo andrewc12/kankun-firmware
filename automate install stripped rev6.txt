@@ -1,0 +1,194 @@
+#sshpass -p p9z34c ssh -o StrictHostKeyChecking=no  root@192.168.10.253     
+#cd /cygdrive/y/tmp
+
+#Copy the firmware onto the device
+sshpass -p p9z34c scp -o StrictHostKeyChecking=no lede-ar71xx-generic-tl-wr703n-v1-squashfs-sysupgrade.bin root@switch2:/tmp/
+
+
+#Update the firmware
+sshpass -p p9z34c ssh -o StrictHostKeyChecking=no  root@switch2   
+sysupgrade -v -i -n /tmp/lede-ar71xx-generic-tl-wr703n-v1-squashfs-sysupgrade.bin
+
+
+
+#Connect to device
+sshpass ssh -o StrictHostKeyChecking=no  root@192.168.1.1 
+
+#Connect to wifi
+cat > /etc/config/wireless << EOF
+config wifi-device  radio0
+    option type     mac80211
+    option channel  auto
+    option hwmode   11ng
+    option path     'platform/ar933x_wmac'
+    option htmode   HT20
+    list ht_capab   SHORT-GI-20
+    list ht_capab   SHORT-GI-40
+    list ht_capab   RX-STBC1
+    list ht_capab   DSSS_CCK-40
+    option disabled 0
+    option country #country code#
+        
+config wifi-iface
+    option device 'radio0'
+    option network 'lan'
+    option mode 'sta'
+    option encryption 'psk-mixed'
+    option key '#password#'
+    option ssid '#ssid#'
+EOF
+
+cat > /etc/config/network << EOF
+
+config interface 'loopback'
+    option ifname 'lo'
+    option proto 'static'
+    option ipaddr '127.0.0.1'
+    option netmask '255.0.0.0'
+
+config interface 'lan'
+    option proto 'dhcp'
+    option hostname '#hostname#'
+EOF
+
+
+
+
+
+
+
+
+#Disable flashing light
+
+vi /etc/config/system
+
+config led
+        option name 'flashing'
+        option sysfs 'tp-link:blue:config'
+        option trigger 'none'
+        option default '0'
+
+
+
+
+#Disable dnsmasq
+
+#cat > /etc/resolv.conf << EOF
+#search lan
+#nameserver 10.0.0.4
+#EOF
+
+/etc/init.d/dnsmasq disable
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#bellow is experimental
+#setup mosquitto_sub
+
+
+cat > sonoff.sh
+#!/bin/sh
+MY_DEVICE=switch2
+RELAY_CTRL=/sys/class/leds/tp-link:blue:relay/brightness
+
+#send relay status via mqtt
+sendstatus(){
+	#get relay status
+	STATUS=$(cat $RELAY_CTRL)
+	#send MQTT status message
+	case "$STATUS" in
+		1) #on
+			mosquitto_pub -h mqtt.lan -t "stat/$MY_DEVICE/POWER" -m "on"
+		;;
+		0) #off
+			mosquitto_pub -h mqtt.lan -t "stat/$MY_DEVICE/POWER" -m "off"
+		;;
+	esac
+}
+
+
+#Receive MQTT command and control the relay or respond with the current status
+msghandle(){
+while :
+do
+	mosquitto_sub -v -h mqtt.lan -t "cmnd/$MY_DEVICE/power" -q 1 | while read -r MSG;
+	do
+		#Use wildcard to ignore most of verbrose messages
+		case "$MSG" in
+			#set relay status
+			*on) echo "on"
+				echo 1 > $RELAY_CTRL
+				mosquitto_pub -h mqtt.lan -t "stat/$MY_DEVICE/POWER" -m "on"
+			;;
+			*off) echo "off"
+				echo 0 > $RELAY_CTRL
+				mosquitto_pub -h mqtt.lan -t "stat/$MY_DEVICE/POWER" -m "off"
+			;;
+			#Report the current status
+			*) echo "else"
+			sendstatus
+			;;
+		esac
+	#Use verbose mode to make it easier to receive null messages
+	done
+done
+}
+
+#run message handler in the background
+msghandle &
+
+#Return the relay status every 3 seconds
+while :
+do
+	sendstatus
+	sleep 3
+done
+
+exit 0
+
+
+
+
+
+
+
+
+
+chmod +x ./sonoff.sh
+
+
+
+
+
+
+
+
+cat > /etc/rc.local << EOF
+# Put your custom commands here that should be executed once
+# the system init finished. By default this file does nothing.
+/root/sonoff.sh &
+
+exit 0
+EOF
+
